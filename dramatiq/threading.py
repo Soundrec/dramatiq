@@ -18,8 +18,15 @@
 import ctypes
 import inspect
 import platform
+import threading
+import time
+import threading
 
 from .logging import get_logger
+from collections import defaultdict
+
+from datetime import datetime
+from dataclasses import dataclass, field
 
 __all__ = [
     "Interrupt",
@@ -28,7 +35,6 @@ __all__ = [
     "raise_thread_exception",
     "supported_platforms",
 ]
-
 
 logger = get_logger(__name__)
 
@@ -69,7 +75,7 @@ def raise_thread_exception(thread_id, exception):
       cancel system calls.
     """
     if current_platform == "CPython":
-        _raise_thread_exception_cpython(thread_id, exception)
+        WE._catch_exception(thread_id, exception)
     else:
         message = "Setting thread exceptions (%s) is not supported for your current platform (%r)."
         exctype = (exception if inspect.isclass(exception) else type(exception)).__name__
@@ -86,3 +92,93 @@ def _raise_thread_exception_cpython(thread_id, exception):
     elif count > 1:  # pragma: no cover
         logger.critical("Exception (%s) was set in multiple threads.  Undoing...", exctype)
         ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, ctypes.c_long(0))
+
+
+@dataclass
+class ThreadState:
+    ack: bool = False
+    last_update: datetime = field(default_factory=datetime.now)
+    exceptions: list[Exception] = field(default_factory=list)
+
+    def clear(self):
+        self.ack = False
+        self.exceptions.clear()
+        self.last_updated = datetime.now()
+
+    def fetch_exceptions(self):
+        self.ack = True
+        self.last_updated = datetime.now()
+
+        return self.exceptions
+
+    def add_exception(self, exception: Exception):
+        self.ack = False
+        self.exceptions.append(exception)
+        self.last_updated = datetime.now()
+
+
+class Singleton(type):
+    _instances = {}
+    def __call__(cls, *args, **kwargs):
+        if cls not in cls._instances:
+            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
+        return cls._instances[cls]
+
+
+class WorkerExceptions(metaclass=Singleton):
+    ACK_TIMEOUT = 15 
+    WATCHER_SLEEP = 1
+
+    _watch_thread: threading.Thread
+    _state_mapping = defaultdict(lambda: ThreadState())
+
+    def __init__(self):
+        self.logger = get_logger(__name__, type(self))
+
+        self._watch_thread = threading.Thread(target=self._raise_exception_watcher)
+        self._watch_thread.start()
+
+    def _raise_exception_watcher(self):
+        while True:
+            time.sleep(self.WATCHER_SLEEP)
+            
+            for thread_id, state in self._state_mapping.items():
+                if not state.ack and state.exceptions:
+                    delta = datetime.now() - state.last_updated
+
+                    if delta.seconds >= self.ACK_TIMEOUT:
+                        _raise_thread_exception_cpython(thread_id, state.exceptions[0])
+
+
+    def _get_thread_state(self, thread_id: int | None = None):
+        if thread_id is None:   
+            thread_id = threading.get_ident()
+    
+        return self._state_mapping[thread_id]
+
+
+    def _catch_exception(self, thread_id: int, exception: Exception):
+        state = self._get_thread_state(thread_id)
+        state.add_exception(exception)
+        
+        self.logger.warning(f'Caught exception {exception} in worker thread {thread_id}')
+
+    def get_exceptions(self):
+        state = self._get_thread_state()
+        
+        return state.fetch_exceptions()
+
+    def on_thread_close(self):
+        thread_id = threading.get_ident()
+
+        del self._state_mapping[thread_id]
+
+    def on_task_finsih(self):
+        thread_id = threading.get_ident()
+
+        state = self._get_thread_state()
+        state.clear()
+
+        self.logger.warning(f'Clear _state_mapping in worker thread {thread_id}')
+
+WE = WorkerExceptions()

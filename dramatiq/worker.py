@@ -28,6 +28,7 @@ from .errors import ActorNotFound, ConnectionError, RateLimitExceeded, Retry
 from .logging import get_logger
 from .middleware import Middleware, SkipMessage
 from .results.middleware import Results
+from .threading import WE
 
 #: The number of milliseconds to wait before restarting consumers
 #: after a connection error.
@@ -131,9 +132,10 @@ class Worker:
         # during this process so that heartbeats keep being sent to
         # the broker while workers finish their current tasks.
         self.logger.debug("Stopping workers...")
+           
         for thread in self.workers:
             thread.stop()
-
+    
         join_all(self.workers, timeout)
         self.logger.debug("Workers stopped.")
         self.logger.debug("Stopping consumers...")
@@ -523,6 +525,7 @@ class _WorkerThread(Thread):
             # this is safe.  Probably.
             self.consumers[message.queue_name].post_process_message(message)
             self.work_queue.task_done()
+            WE.on_task_finsih()
 
             # See discussion #351.  Keeping a reference to the
             # exception can lead to memory bloat because it may be a
@@ -548,6 +551,7 @@ class _WorkerThread(Thread):
         wait for it to finish shutting down.
         """
         self.logger.debug("Stopping worker thread...")
+        WE.on_thread_close()
         self.running = False
 
 
