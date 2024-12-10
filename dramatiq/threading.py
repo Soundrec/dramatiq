@@ -134,12 +134,18 @@ class WorkerExceptions(metaclass=Singleton):
 
     def __init__(self):
         self.logger = get_logger(__name__, type(self))
-
+        
+        self._stop_event = threading.Event()
+        
         self._watch_thread = threading.Thread(target=self._raise_exception_watcher)
         self._watch_thread.start()
 
+    def stop_background_thread(self):
+        self._stop_event.set()
+        self._watch_thread.join()
+
     def _raise_exception_watcher(self):
-        while True:
+        while not self._stop_event.is_set():
             time.sleep(self.WATCHER_SLEEP)
             
             for thread_id, state in self._state_mapping.items():
@@ -148,7 +154,6 @@ class WorkerExceptions(metaclass=Singleton):
 
                     if delta.seconds >= self.ACK_TIMEOUT:
                         _raise_thread_exception_cpython(thread_id, state.exceptions[0])
-
 
     def _get_thread_state(self, thread_id: int | None = None):
         if thread_id is None:   
@@ -171,7 +176,11 @@ class WorkerExceptions(metaclass=Singleton):
     def on_thread_close(self):
         thread_id = threading.get_ident()
 
-        del self._state_mapping[thread_id]
+        if self._watch_thread.is_alive():
+            self.stop()
+
+        if thread_id in self._state_mapping:
+            del self._state_mapping[thread_id]
 
     def on_task_finsih(self):
         thread_id = threading.get_ident()
@@ -179,6 +188,6 @@ class WorkerExceptions(metaclass=Singleton):
         state = self._get_thread_state()
         state.clear()
 
-        self.logger.warning(f'Clear _state_mapping in worker thread {thread_id}')
+        self.logger.warning(f'Cleared _state_mapping in worker thread {thread_id}')
 
 WE = WorkerExceptions()
