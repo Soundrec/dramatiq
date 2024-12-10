@@ -184,10 +184,12 @@ class WorkerExceptions(metaclass=Singleton):
 
     def on_task_finsih(self):
         thread_id = threading.get_ident()
-
+        
+        self.stop_background_thread()
+        
         state = self._get_thread_state()
         state.clear()
-
+        
         self.logger.warning(f'Cleared _state_mapping in worker thread {thread_id}')
 
 WE = WorkerExceptions()
