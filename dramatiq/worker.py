@@ -135,7 +135,6 @@ class Worker:
            
         for thread in self.workers:
             thread.stop()
-            WE.on_thread_close()
     
         join_all(self.workers, timeout)
         self.logger.debug("Workers stopped.")
@@ -467,6 +466,8 @@ class _WorkerThread(Thread):
                 continue
 
         self.broker.emit_before("worker_thread_shutdown", self)
+        WE.on_thread_close()
+
         self.logger.debug("Worker thread stopped.")
 
     def process_message(self, message):
@@ -526,7 +527,7 @@ class _WorkerThread(Thread):
             # this is safe.  Probably.
             self.consumers[message.queue_name].post_process_message(message)
             self.work_queue.task_done()
-            # WE.on_task_finsih()
+            WE.on_task_finsih()
 
             # See discussion #351.  Keeping a reference to the
             # exception can lead to memory bloat because it may be a
